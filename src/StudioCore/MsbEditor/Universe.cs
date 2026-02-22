@@ -14,6 +14,10 @@ using System.Runtime.ExceptionServices;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Threading.Tasks;
+using Vortice.Vulkan;
+using System.Text.Json;
+using System.Text.Json.Serialization;
+using System.Runtime.InteropServices;
 
 namespace StudioCore.MsbEditor;
 
@@ -686,6 +690,8 @@ public class Universe
 
     public async void LoadMapAsync(string mapid, bool selectOnLoad = false)
     {
+
+        Console.WriteLine("LoadMapAsync" + Environment.NewLine);
         if (LoadedObjectContainers.TryGetValue(mapid, out var m) && m != null)
         {
             TaskLogs.AddLog($"Map \"{mapid}\" is already loaded",
@@ -728,7 +734,7 @@ public class Universe
                     break;
                 default:
                     throw new Exception($"Error: Did not expect Gametype {Locator.AssetLocator.Type}");
-                //break;
+                    //break;
             }
 
             AssetDescription ad = Locator.AssetLocator.GetMapMSB(mapid);
@@ -828,6 +834,7 @@ public class Universe
                 if (obj.WrappedObject is IMsbPart mp && mp.ModelName != null && mp.ModelName != "" &&
                     obj.RenderSceneMesh == null)
                 {
+                    // BOOKMARK: model loading
                     GetModelDrawable(map, obj, mp.ModelName, false);
                 }
             }
@@ -1042,6 +1049,8 @@ public class Universe
 
             // Check for duplicate EntityIDs
             CheckDupeEntityIDs(map);
+
+            ExportMapGLTF(map, "glTF-Export");
         }
         catch (Exception e)
         {
@@ -1053,6 +1062,773 @@ public class Universe
                 // Store async exception so it can be caught by crash handler.
                 LoadMapExceptions = System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(e);
 #endif
+        }
+
+    }
+
+    private static void ExportMapGLTF(Map map, string path) {
+        string fullPath = $"{path}/{map.Name}";
+
+
+        Dictionary<int, int> meshIndexCache = new Dictionary<int, int>();
+        List<FLVER2.Mesh> flverMeshList = new List<FLVER2.Mesh>();
+        List<bool> is32bitMeshList = new List<bool>();
+
+        List<glTFEntity> splitEntities = new List<glTFEntity>();
+
+
+        // Find all meshes and assign indexes
+        foreach (Entity entity in map.Objects) {
+            if (entity.RenderSceneMesh is MeshRenderableProxy meshProxy) {
+                if (meshProxy._meshProvider is FlverMeshProvider flverProvider) {
+                    if (flverProvider._resource != null) {
+                        FlverResource flverRes = flverProvider._resource.Get();
+
+                        foreach (FLVER2.Mesh flverMesh in flverRes.Flver.Meshes) {
+                            if (meshIndexCache.TryAdd(flverMesh.GetHashCode(), flverMeshList.Count)) {
+                                flverMeshList.Add(flverMesh);
+                                is32bitMeshList.Add(flverRes.Flver.Header.Version > 0x20005 && flverMesh.VertexCount > 65535);
+                            }
+
+                            splitEntities.Add(new glTFEntity {
+                                name = entity.Name,
+                                mesh = flverMesh,
+                                transform = entity.GetWorldMatrix()
+                            });
+
+                        }
+                    }
+                }
+            }
+        }
+
+        int[] nodesIndexList = new int[splitEntities.Count];
+        for (int i = 0; i < nodesIndexList.Length; i++) {
+            nodesIndexList[i] = i;
+        }
+
+        glTFSceneField[] sceneFields = new glTFSceneField[] {
+            new glTFSceneField {
+                name = "Scene",
+                nodes = nodesIndexList
+            }
+        };
+
+        glTFNodeField[] nodeFields = new glTFNodeField[splitEntities.Count];
+        for (int i = 0; i < nodeFields.Length; i++) {
+            glTFEntity entity = splitEntities[i];
+            nodeFields[i] = new glTFNodeField {
+                mesh = meshIndexCache[entity.mesh.GetHashCode()],
+                name = entity.name,
+                matrix = new float[]{
+                    entity.transform.M11, entity.transform.M12, entity.transform.M13, entity.transform.M14, // col X
+                    entity.transform.M21, entity.transform.M22, entity.transform.M23, entity.transform.M24, // col Y
+                    entity.transform.M31, entity.transform.M32, entity.transform.M33, entity.transform.M34, // col Z
+                    entity.transform.M41, entity.transform.M42, entity.transform.M43, entity.transform.M44, // col translation
+                }
+            };
+        }
+
+
+        List<glTFAccessorField> accessorFieldsList = new List<glTFAccessorField>();
+        int attributeCount = 0;
+        int bufferViewCount = 0;
+        glTFMeshField[] meshFields = new glTFMeshField[flverMeshList.Count];
+
+        for (int i = 0; i < meshFields.Length; i++) {
+            FLVER2.Mesh mesh = flverMeshList[i];
+            bool is32bit = is32bitMeshList[i];
+
+            glTFPrimitiveField primitiveField = new glTFPrimitiveField();
+            glTFAttributesField attributesField = new glTFAttributesField {
+                POSITION = attributeCount,
+                NORMAL = attributeCount + 1
+            };
+            attributeCount += 2;
+
+            glTFAccessorField positionField = new glTFAccessorField {
+                bufferView = bufferViewCount,
+                componentType = glTFComponentType.FLOAT,
+                count = mesh.VertexCount,
+                type = glTFAccessorType.VECTOR3
+            };
+            bufferViewCount += 1;
+            accessorFieldsList.Add(positionField);
+
+            glTFAccessorField normalField = new glTFAccessorField {
+                bufferView = bufferViewCount,
+                componentType = glTFComponentType.FLOAT,
+                count = mesh.VertexCount,
+                type = glTFAccessorType.VECTOR3
+            };
+            bufferViewCount += 1;
+            accessorFieldsList.Add(normalField);
+
+            // TODO: add tex coords here later
+
+            primitiveField.indices = attributeCount;
+            attributeCount += 1;
+
+            glTFAccessorField indiceField = new glTFAccessorField {
+                bufferView = bufferViewCount,
+                componentType = is32bit ? glTFComponentType.UINT : glTFComponentType.USHORT,
+                // TODO: wrap Flver2.mesh so it actually stores a list of indices
+                count = getIndicesCount(mesh),
+                type = glTFAccessorType.SCALAR
+            };
+            bufferViewCount += 1;
+            accessorFieldsList.Add(indiceField);
+
+            primitiveField.attributes = attributesField;
+
+            meshFields[i] = new glTFMeshField {
+                name = $"mesh_{i}",
+                primitives = new glTFPrimitiveField[] {
+                    primitiveField
+                }
+            };
+        }
+
+        glTFBufferViewField[] bufferViewFields = new glTFBufferViewField[accessorFieldsList.Count];
+        int byteCount = 0;
+        
+        for (int i = 0; i < accessorFieldsList.Count; i++) {
+            glTFAccessorField accessorField = accessorFieldsList[i];
+            glTFBufferViewField bufferViewField = new glTFBufferViewField();
+
+            bufferViewField.buffer = 0;
+            int byteLength = 0;
+
+            switch(accessorField.type) {
+                case glTFAccessorType.VECTOR3:
+                    byteLength = accessorField.count * sizeof(float) * 3;
+                    break;
+                case glTFAccessorType.VECTOR2:
+                    byteLength = accessorField.count * sizeof(float) * 2;
+                    break;
+                case glTFAccessorType.SCALAR:
+                    if (accessorField.componentType == glTFComponentType.USHORT) {
+                        byteLength = accessorField.count * sizeof(ushort);
+                    } else {
+                        byteLength = accessorField.count * sizeof(uint);
+                    }
+                    break;
+            }
+
+            bufferViewField.byteLength = byteLength;
+            bufferViewField.byteOffset = byteCount;
+
+            byteCount += byteLength;
+
+            bufferViewFields[i] = bufferViewField;
+        }
+
+        glTFBufferField[] bufferFields = new glTFBufferField[] {
+            new glTFBufferField {
+                byteLength = byteCount,
+                uri = $"{map.Name}.bin"
+            }
+        };
+
+
+        var gltfData = new glTF {
+            asset = new AssetField {
+                generator = "DSMapStudio glTF Fork",
+                version = "2.0"
+            },
+
+            scenes = sceneFields,
+
+            nodes = nodeFields,
+
+            meshes = meshFields,
+
+            accessors = accessorFieldsList.ToArray(),
+
+            bufferViews = bufferViewFields,
+
+            buffers= bufferFields
+        };
+
+        JsonSerializerOptions options = new JsonSerializerOptions {
+            WriteIndented = true,
+            DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
+        };
+
+        var glTFStream = File.Open(fullPath + ".gltf", FileMode.Create);
+        var glTFWriter=  new StreamWriter(glTFStream);
+        string json = JsonSerializer.Serialize(gltfData, options);
+
+        glTFWriter.Write(json);
+
+        glTFWriter.Close();
+        glTFStream.Close();
+
+        var binStream = File.Open(fullPath + ".bin", FileMode.Create);
+        var binWriter = new BinaryWriter(binStream);
+
+        // foreach (FLVER2.Mesh mesh in flverMeshList) {
+        //     binWriter.Write(MeshToByteArray(mesh));
+        // }
+
+        for (int i = 0; i < flverMeshList.Count; i++) {
+            FLVER2.Mesh mesh = flverMeshList[i];
+            bool is32bit = is32bitMeshList[i];
+
+            if (is32bit) {
+                binWriter.Write(MeshToByteArray32bit(mesh));
+            } else {
+                binWriter.Write(MeshToByteArray(mesh));
+            }
+        }
+
+        binWriter.Close();
+        binStream.Close();
+
+    }
+
+    public struct glTFEntity {
+        public string name;
+        public 
+        FLVER2.Mesh mesh;
+        public Matrix4x4 transform;
+
+    };
+
+    public struct glTFMesh {
+        public FLVER2.Mesh flverMesh;
+        public bool is32bit;
+        public ushort[] indices16bit;
+        public int[] indices32bit;
+    }
+
+    public struct glTF {
+        public AssetField asset { get; set; }
+        // default scene index
+        public int? scene;
+        public glTFSceneField[] scenes { get; set; }
+        public glTFNodeField[] nodes { get; set; }
+        public glTFMeshField[] meshes {get; set; }
+        public glTFAccessorField[] accessors { get; set; }
+        public glTFBufferViewField[] bufferViews { get; set; }
+        public glTFBufferField[] buffers { get; set; }
+    }
+
+    public struct AssetField {
+        public string generator { get; set; }
+        public string version { get; set; }
+
+    }
+
+    public struct glTFSceneField {
+        public string name { get; set; }
+        public int[] nodes { get; set; }
+    }
+
+    public struct glTFNodeField {
+        public int mesh { get; set; }
+        public string name { get; set; }
+        public float[] matrix { get; set; }
+    }
+
+    public struct glTFMeshField {
+    public string name { get; set; }
+    public glTFPrimitiveField[] primitives { get; set; }
+}
+
+    public struct glTFPrimitiveField {
+        public glTFAttributesField attributes { get; set; }
+        public int indices { get; set; }
+    }
+
+    public struct glTFAttributesField {
+        public int? POSITION { get; set; }
+        public int? NORMAL { get; set; }
+        public int? TEXCOORD_O { get; set; }
+    }
+
+    public static class glTFComponentType {
+        public const int FLOAT = 5126;
+        public const int USHORT = 5123;
+        public const int UINT = 5125;
+    }
+
+    public static class glTFAccessorType {
+        public const string VECTOR2 = "VEC2";
+        public const string VECTOR3 = "VEC3";
+        public const string SCALAR = "SCALAR";
+    }
+
+    // Stores information about the buffer and how to access it
+    public struct glTFAccessorField {
+        public int bufferView { get; set; }
+        public int componentType { get; set; }
+        public int count { get; set; }
+        public string type { get; set; }
+    }
+    public struct glTFBufferViewField {
+        public int buffer { get; set; }
+        public int byteLength { get; set; }
+        public int byteOffset { get; set; }
+        public int? target { get; set; }
+    };
+
+    public static class glTFBufferViewTarget {
+        public const int ARRAY_BUFFER = 34962;
+        public const int ELEMENT_ARRAY_BUFFER = 34963;
+    }
+
+    public struct glTFBufferField {
+        public int byteLength { get; set; }
+        public string uri { get; set; }
+    }
+
+    private static byte[] MeshToByteArray(FLVER2.Mesh mesh) {
+        int positionCount = mesh.VertexCount;
+        int normalCount = mesh.VertexCount;
+        int indiceCount = getIndicesCount(mesh);
+
+        int postionByteCount = positionCount * sizeof(float) * 3;
+        int normalByteCount = normalCount * sizeof(float) * 3;
+        int indiceByteCount = indiceCount * sizeof(ushort);
+
+        int byteCount = postionByteCount + normalByteCount + indiceByteCount;
+        byte[] byteArray = new byte[byteCount];
+
+        float[] primtivePositionsArray = new float[positionCount * 3];
+        for (int i = 0; i < (positionCount * 3); i += 3) {
+            FLVER.Vertex vertex = mesh.Vertices[i/3];
+            Vector3 position = vertex.Position;
+            primtivePositionsArray[i] = position.X;
+            primtivePositionsArray[i+1] = position.Y;
+            primtivePositionsArray[i+2] = position.Z;
+        }
+
+        float[] primtiveNormalsArray = new float[normalCount * 3];
+        for (int i = 0; i < (normalCount * 3); i += 3) {
+            FLVER.Vertex vertex = mesh.Vertices[i/3];
+            Vector3 normal = vertex.Normal;
+            primtiveNormalsArray[i] = -normal.X;
+            primtiveNormalsArray[i+1] = -normal.Y;
+            primtiveNormalsArray[i+2] = -normal.Z;
+        }
+
+        Buffer.BlockCopy(primtivePositionsArray, 0, byteArray, 0, postionByteCount);
+        Buffer.BlockCopy(primtiveNormalsArray, 0, byteArray, postionByteCount, normalByteCount);
+        Buffer.BlockCopy(getIndices(mesh), 0, byteArray, postionByteCount + normalByteCount, indiceByteCount);
+
+        return byteArray;
+    }
+
+    private static byte[] MeshToByteArray32bit(FLVER2.Mesh mesh) {
+        int positionCount = mesh.VertexCount;
+        int normalCount = mesh.VertexCount;
+        int indiceCount = getIndicesCount(mesh);
+
+        int postionByteCount = positionCount * sizeof(float) * 3;
+        int normalByteCount = normalCount * sizeof(float) * 3;
+        int indiceByteCount = indiceCount * sizeof(int);
+
+        int byteCount = postionByteCount + normalByteCount + indiceByteCount;
+        byte[] byteArray = new byte[byteCount];
+
+        float[] primtivePositionsArray = new float[positionCount * 3];
+        for (int i = 0; i < (positionCount * 3); i += 3) {
+            FLVER.Vertex vertex = mesh.Vertices[i/3];
+            Vector3 position = vertex.Position;
+            primtivePositionsArray[i] = position.X;
+            primtivePositionsArray[i+1] = position.Y;
+            primtivePositionsArray[i+2] = position.Z;
+        }
+
+        float[] primtiveNormalsArray = new float[normalCount * 3];
+        for (int i = 0; i < (normalCount * 3); i += 3) {
+            FLVER.Vertex vertex = mesh.Vertices[i/3];
+            Vector3 normal = vertex.Normal;
+            primtiveNormalsArray[i] = -normal.X;
+            primtiveNormalsArray[i+1] = -normal.Y;
+            primtiveNormalsArray[i+2] = -normal.Z;
+        }
+
+        Buffer.BlockCopy(primtivePositionsArray, 0, byteArray, 0, postionByteCount);
+        Buffer.BlockCopy(primtiveNormalsArray, 0, byteArray, postionByteCount, normalByteCount);
+        Buffer.BlockCopy(getIndices32bit(mesh), 0, byteArray, postionByteCount + normalByteCount, indiceByteCount);
+
+        return byteArray;
+    }
+
+    private static int getIndicesCount(FLVER2.Mesh flverMesh) {
+        List<FLVER2.FaceSet>? facesets = flverMesh.FaceSets;
+        var indicesTotal = 0;
+
+        foreach (FLVER2.FaceSet? faceset in facesets) {
+            indicesTotal += faceset.Indices.Length;
+        }
+
+        return indicesTotal;
+    }
+    private static ushort[] getIndices(FLVER2.Mesh flverMesh) {
+        List<FLVER2.FaceSet>? facesets = flverMesh.FaceSets;
+        var indicesTotal = 0;
+        bool is32bit = false;
+
+        Span<ushort> fs16 = null;
+        Span<int> fs32 = null;
+
+        foreach (FLVER2.FaceSet? faceset in facesets) {
+            indicesTotal += faceset.Indices.Length;
+        }
+
+        if (is32bit) {
+            fs32 = new int[indicesTotal];
+        } else {
+            fs16 = new ushort[indicesTotal];
+        }
+
+        var idxoffset =0;
+        foreach (FLVER2.FaceSet? faceset in facesets) {
+            if (faceset.Indices.Length == 0) {
+                continue;
+            }
+
+            FlverResource.FlverSubmesh.FlverSubmeshFaceSet newFaceSet = new() {
+                BackfaceCulling = faceset.CullBackfaces,
+                IsTriangleStrip = faceset.TriangleStrip,
+                IndexOffset = idxoffset,
+                IndexCount = faceset.IndicesCount,
+                Is32Bit = is32bit
+            };
+
+            if ((faceset.Flags & FLVER2.FaceSet.FSFlags.LodLevel1) > 0)
+            {
+                newFaceSet.LOD = 1;
+                newFaceSet.IsMotionBlur = false;
+            }
+            else if ((faceset.Flags & FLVER2.FaceSet.FSFlags.LodLevel2) > 0)
+            {
+                newFaceSet.LOD = 2;
+                newFaceSet.IsMotionBlur = false;
+            }
+
+            if ((faceset.Flags & FLVER2.FaceSet.FSFlags.MotionBlur) > 0)
+            {
+                newFaceSet.IsMotionBlur = true;
+            }
+
+            if (is32bit)
+            {
+                for (var k = 0; k < faceset.Indices.Length; k++)
+                {
+                    if (faceset.Indices[k] == 0xFFFF && faceset.Indices[k] > flverMesh.Vertices.Length)
+                    {
+                        fs32[newFaceSet.IndexOffset + k] = -1;
+                    }
+                    else
+                    {
+                        fs32[newFaceSet.IndexOffset + k] = faceset.Indices[k];
+                    }
+                }
+            }
+            else
+            {
+                for (var k = 0; k < faceset.Indices.Length; k++)
+                {
+                    if (faceset.Indices[k] == 0xFFFF && faceset.Indices[k] > flverMesh.Vertices.Length)
+                    {
+                        fs16[newFaceSet.IndexOffset + k] = 0xFFFF;
+                    }
+                    else
+                    {
+                        fs16[newFaceSet.IndexOffset + k] = (ushort)faceset.Indices[k];
+                    }
+                }
+            }
+
+            idxoffset += faceset.Indices.Length;
+        }
+
+        return fs16.ToArray();
+    }
+
+    private static int[] getIndices32bit(FLVER2.Mesh flverMesh) {
+        List<FLVER2.FaceSet>? facesets = flverMesh.FaceSets;
+        var indicesTotal = 0;
+        bool is32bit = true;
+
+        Span<ushort> fs16 = null;
+        Span<int> fs32 = null;
+
+        foreach (FLVER2.FaceSet? faceset in facesets) {
+            indicesTotal += faceset.Indices.Length;
+        }
+
+        if (is32bit) {
+            fs32 = new int[indicesTotal];
+        } else {
+            fs16 = new ushort[indicesTotal];
+        }
+
+        var idxoffset =0;
+        foreach (FLVER2.FaceSet? faceset in facesets) {
+            if (faceset.Indices.Length == 0) {
+                continue;
+            }
+
+            FlverResource.FlverSubmesh.FlverSubmeshFaceSet newFaceSet = new() {
+                BackfaceCulling = faceset.CullBackfaces,
+                IsTriangleStrip = faceset.TriangleStrip,
+                IndexOffset = idxoffset,
+                IndexCount = faceset.IndicesCount,
+                Is32Bit = is32bit
+            };
+
+            if ((faceset.Flags & FLVER2.FaceSet.FSFlags.LodLevel1) > 0)
+            {
+                newFaceSet.LOD = 1;
+                newFaceSet.IsMotionBlur = false;
+            }
+            else if ((faceset.Flags & FLVER2.FaceSet.FSFlags.LodLevel2) > 0)
+            {
+                newFaceSet.LOD = 2;
+                newFaceSet.IsMotionBlur = false;
+            }
+
+            if ((faceset.Flags & FLVER2.FaceSet.FSFlags.MotionBlur) > 0)
+            {
+                newFaceSet.IsMotionBlur = true;
+            }
+
+            if (is32bit)
+            {
+                for (var k = 0; k < faceset.Indices.Length; k++)
+                {
+                    if (faceset.Indices[k] == 0xFFFF && faceset.Indices[k] > flverMesh.Vertices.Length)
+                    {
+                        fs32[newFaceSet.IndexOffset + k] = -1;
+                    }
+                    else
+                    {
+                        fs32[newFaceSet.IndexOffset + k] = faceset.Indices[k];
+                    }
+                }
+            }
+            else
+            {
+                for (var k = 0; k < faceset.Indices.Length; k++)
+                {
+                    if (faceset.Indices[k] == 0xFFFF && faceset.Indices[k] > flverMesh.Vertices.Length)
+                    {
+                        fs16[newFaceSet.IndexOffset + k] = 0xFFFF;
+                    }
+                    else
+                    {
+                        fs16[newFaceSet.IndexOffset + k] = (ushort)faceset.Indices[k];
+                    }
+                }
+            }
+
+            idxoffset += faceset.Indices.Length;
+        }
+
+        return fs32.ToArray();
+    }
+
+    private static void ExportEntities(Map map) {
+        foreach (Entity obj in map.Objects) {
+            if (obj.RenderSceneMesh is MeshRenderableProxy meshProxy) {
+                if (meshProxy._meshProvider is FlverMeshProvider flverProvider) {
+                    if (flverProvider._resource != null) {
+                        FlverResource flverRes = flverProvider._resource.Get();
+
+                        Matrix4x4 transform = obj.GetWorldMatrix();
+
+                        Console.WriteLine(flverRes.Flver.Meshes.Count);
+                        for (int i = 0; i < flverRes.Flver.Meshes.Count; i++) {
+                            var mesh = flverRes.Flver.Meshes[i];
+                            var dest = flverRes.GPUMeshes[i];
+
+                            var vSize = dest.Material.VertexSize;
+                            List<FLVER2.FaceSet>? facesets = mesh.FaceSets;
+                            var is32bit = flverRes.Flver.Header.Version > 0x20005 && mesh.VertexCount > 65535;
+                            var indicesTotal = 0;
+                            Span<ushort> fs16 = null;
+                            Span<int> fs32 = null;
+                            foreach (FLVER2.FaceSet? faceset in facesets)
+                            {
+                                indicesTotal += faceset.Indices.Length;
+                            }
+
+                            if (is32bit)
+                            {
+                                fs32 = new int[indicesTotal];
+                            }
+                            else
+                            {
+                                fs16 = new ushort[indicesTotal];
+                            }
+
+                            var idxoffset = 0;
+                            foreach (FLVER2.FaceSet? faceset in facesets)
+                            {
+                                if (faceset.Indices.Length == 0)
+                                {
+                                    continue;
+                                }
+
+                                //At this point they use 32-bit faceset vertex indices
+                                FlverResource.FlverSubmesh.FlverSubmeshFaceSet newFaceSet = new()
+                                {
+                                    BackfaceCulling = faceset.CullBackfaces,
+                                    IsTriangleStrip = faceset.TriangleStrip,
+                                    IndexOffset = idxoffset,
+                                    IndexCount = faceset.IndicesCount,
+                                    Is32Bit = is32bit
+                                };
+
+
+                                if ((faceset.Flags & FLVER2.FaceSet.FSFlags.LodLevel1) > 0)
+                                {
+                                    newFaceSet.LOD = 1;
+                                    newFaceSet.IsMotionBlur = false;
+                                }
+                                else if ((faceset.Flags & FLVER2.FaceSet.FSFlags.LodLevel2) > 0)
+                                {
+                                    newFaceSet.LOD = 2;
+                                    newFaceSet.IsMotionBlur = false;
+                                }
+
+                                if ((faceset.Flags & FLVER2.FaceSet.FSFlags.MotionBlur) > 0)
+                                {
+                                    newFaceSet.IsMotionBlur = true;
+                                }
+
+                                if (is32bit)
+                                {
+                                    for (var k = 0; k < faceset.Indices.Length; k++)
+                                    {
+                                        if (faceset.Indices[k] == 0xFFFF && faceset.Indices[k] > mesh.Vertices.Length)
+                                        {
+                                            fs32[newFaceSet.IndexOffset + k] = -1;
+                                        }
+                                        else
+                                        {
+                                            fs32[newFaceSet.IndexOffset + k] = faceset.Indices[k];
+                                        }
+                                    }
+                                }
+                                else
+                                {
+                                    for (var k = 0; k < faceset.Indices.Length; k++)
+                                    {
+                                        if (faceset.Indices[k] == 0xFFFF && faceset.Indices[k] > mesh.Vertices.Length)
+                                        {
+                                            fs16[newFaceSet.IndexOffset + k] = 0xFFFF;
+                                        }
+                                        else
+                                        {
+                                            fs16[newFaceSet.IndexOffset + k] = (ushort)faceset.Indices[k];
+                                        }
+                                    }
+                                }
+
+                                // dest.MeshFacesets.Add(newFaceSet);
+                                idxoffset += faceset.Indices.Length;
+                            }
+
+                            FileStream ostrm = null;
+                            StreamWriter writer = null;
+                            // TextWriter oldOut = Console.Out;
+                            Random rnd = new Random();
+                            int uid = rnd.Next(0, 956350233);
+
+                            try
+                            {
+                                ostrm = new FileStream($"meshes2/{obj.Name}_{uid}.obj", FileMode.OpenOrCreate, FileAccess.Write);
+                                writer = new StreamWriter(ostrm);
+                            }
+                            catch (Exception e)
+                            {
+                                // Console.WriteLine("Couldn't open the file");
+                                Console.WriteLine(e.Message);
+                                // return;
+                                ostrm = null;
+                                writer = null;
+                            }
+                            unsafe
+                            {
+
+                                if (writer != null)
+                                {
+                                    writer.Write("# Jank DSMapStudio Exporter" + Environment.NewLine);
+                                    writer.Write($"o {obj.Name}" + Environment.NewLine);
+
+                                    var verts = mesh.Vertices;
+                                    foreach (FLVER.Vertex vert in verts)
+                                    {
+                                        Vector3 transformedPosition = Vector3.Transform(vert.Position, transform);
+                                        writer.Write($"v {transformedPosition.X} {transformedPosition.Y} {transformedPosition.Z}" + Environment.NewLine);
+                                        // writer.Write(vert.Position + Environment.NewLine);
+                                    }
+
+                                    foreach (FLVER.Vertex vert in verts)
+                                    {
+                                        writer.Write($"vn {vert.Normal.X} {vert.Normal.Y} {vert.Normal.Z}" + Environment.NewLine);
+                                    }
+
+                                    foreach (FLVER.Vertex vert in verts)
+                                    {
+                                        var UV = vert.GetUV(0);
+                                        writer.Write($"vt {UV.X} {UV.Y}" + Environment.NewLine);
+                                    }
+
+
+                                    writer.Write("s 0" + Environment.NewLine);
+                                    // writer.Write(Environment.NewLine);
+
+                                    // // writer.Write("Indices: " + Environment.NewLine);
+                                    if (fs32 != null) {
+                                        // writer.Write("fs32" + Environment.NewLine);
+                                        // foreach (int indice in fs32) {
+                                        //     writer.Write(indice + ", ");
+                                        // }
+                                        for(int m = 0; m < fs32.Length; m += 3) {
+                                            int One = fs32[m];
+                                            One += 1;
+                                            int Two = fs32[m+1];
+                                            Two += 1;
+                                            int Three = fs32[m+2];
+                                            Three += 1;
+
+                                            writer.Write($"f {One}/{One}/{One} {Two}/{Two}/{Two} {Three}/{Three}/{Three}" + Environment.NewLine);
+                                        }
+                                    } else {
+                                        // writer.Write("fs16" + Environment.NewLine);
+                                        // foreach (ushort indice in fs16) {
+                                        //     writer.Write(indice + ", ");
+                                        // }
+                                        for(int m = 0; m < fs16.Length; m += 3) {
+                                            ushort One = fs16[m];
+                                            One += 1;
+                                            ushort Two = fs16[m+1];
+                                            Two += 1;
+                                            ushort Three = fs16[m+2];
+                                            Three += 1;
+
+                                            writer.Write($"f {One}/{One}/{One} {Two}/{Two}/{Two} {Three}/{Three}/{Three}" + Environment.NewLine);
+                                        }
+                                    }
+                                    writer.Write(Environment.NewLine);
+                                    writer.Write(Environment.NewLine);
+
+                                    writer.Close();
+                                    ostrm.Close();
+                                }
+                            }
+                        }
+                    }
+                    Console.WriteLine("Export Complete");
+                }
+            }
         }
     }
 
@@ -1496,7 +2272,7 @@ public class Universe
                 Directory.CreateDirectory(Path.GetDirectoryName(adw.AssetPath));
             }
 
-            // Write as a temporary file to make sure there are no errors before overwriting current file 
+            // Write as a temporary file to make sure there are no errors before overwriting current file
             var mapPath = adw.AssetPath;
             //if (GetModProjectPathForFile(mapPath) != null)
             //{

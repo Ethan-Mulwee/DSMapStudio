@@ -273,7 +273,7 @@ public class FlverMeshProvider : MeshProvider, IResourceEventListener
     private BoundingBox _bounds;
 
     private int _referenceCount;
-    private ResourceHandle<FlverResource> _resource;
+    public ResourceHandle<FlverResource> _resource;
 
     private List<FlverSubmeshProvider> _submeshes = new();
 

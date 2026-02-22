@@ -168,7 +168,7 @@ public class MeshRenderableProxy : RenderableProxy, IMeshProviderEventListener
         "AEG816"
     };
 
-    private readonly MeshProvider _meshProvider;
+    public MeshProvider _meshProvider;
 
     private readonly ModelMarkerType _placeholderType;
     private readonly MeshRenderables _renderablesSet;

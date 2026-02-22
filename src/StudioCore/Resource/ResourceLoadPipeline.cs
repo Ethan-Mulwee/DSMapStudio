@@ -51,10 +51,10 @@ public class ResourceLoadPipeline<T> : IResourceLoadPipeline where T : class, IR
         _loadByteResourcesTransform = new ActionBlock<LoadByteResourceRequest>(r =>
         {
             var res = new T();
-            var success = res._Load(r.Data, r.AccessLevel, r.GameType);
+            var success = res._Load(r.Data, AccessLevel.AccessFull, r.GameType);
             if (success)
             {
-                _loadedResources.Post(new ResourceLoadedReply(r.VirtualPath, r.AccessLevel, res));
+                _loadedResources.Post(new ResourceLoadedReply(r.VirtualPath, AccessLevel.AccessFull, res));
             }
         }, options);
         _loadFileResourcesTransform = new ActionBlock<LoadFileResourceRequest>(r =>
@@ -62,10 +62,10 @@ public class ResourceLoadPipeline<T> : IResourceLoadPipeline where T : class, IR
             try
             {
                 var res = new T();
-                var success = res._Load(r.File, r.AccessLevel, r.GameType);
+                var success = res._Load(r.File, AccessLevel.AccessFull, r.GameType);
                 if (success)
                 {
-                    _loadedResources.Post(new ResourceLoadedReply(r.VirtualPath, r.AccessLevel, res));
+                    _loadedResources.Post(new ResourceLoadedReply(r.VirtualPath, AccessLevel.AccessFull, res));
                 }
             }
             catch (FileNotFoundException e1) { TaskLogs.AddLog("Resource load error", Microsoft.Extensions.Logging.LogLevel.Warning, TaskLogs.LogPriority.Low, e1); }
