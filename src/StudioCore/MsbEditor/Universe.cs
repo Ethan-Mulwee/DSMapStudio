@@ -1072,11 +1072,22 @@ public class Universe
 
         Dictionary<int, int> meshIndexCache = new Dictionary<int, int>();
         List<FLVER2.Mesh> flverMeshList = new List<FLVER2.Mesh>();
+
+        Dictionary<int, int> materialIndexCache = new Dictionary<int, int>();
+        List<FLVER2.Material> flverMaterialList = new List<FLVER2.Material>();
+
+        Dictionary<int, int> textureIndexCache = new Dictionary<int, int>();
+        List<FLVER2.Texture> flverTextureList = new List<FLVER2.Texture>();
+
+
         List<bool> is32bitMeshList = new List<bool>();
 
         List<glTFEntity> splitEntities = new List<glTFEntity>();
 
+        // Get the textures
+        // Renderer.GlobalTexturePool._handles;
 
+        
         // Find all meshes and assign indexes
         foreach (Entity entity in map.Objects) {
             if (entity.RenderSceneMesh is MeshRenderableProxy meshProxy) {
@@ -1084,19 +1095,55 @@ public class Universe
                     if (flverProvider._resource != null) {
                         FlverResource flverRes = flverProvider._resource.Get();
 
-                        foreach (FLVER2.Mesh flverMesh in flverRes.Flver.Meshes) {
+                        // foreach (var material in flverRes.Flver.Materials) {
+                        //     Console.WriteLine(material.Name);
+                        //     Console.WriteLine($"material has {material.Textures.Count} textures");
+                        //     foreach (var texture in material.Textures) {
+                        //         Console.WriteLine(texture.Path);
+                        //     }
+                        //     Console.WriteLine();
+                        // }
+
+                        for (int i = 0; i < flverRes.Flver.Meshes.Count; i++) {
+                            FLVER2.Mesh flverMesh = flverRes.Flver.Meshes[i];
+
+                            if (i < flverRes.Flver.Materials.Count) {
+                                FLVER2.Material flverMaterial = flverRes.Flver.Materials[i];
+                                if (materialIndexCache.TryAdd(flverMaterial.GetHashCode(), flverMaterialList.Count)) {
+                                    flverMaterialList.Add(flverMaterial);
+                                }
+                            } else {
+                                // if the mesh hasn't been seen before then add null values for it's materials 
+                                int value;
+                                if (meshIndexCache.TryGetValue(flverMesh.GetHashCode(), out value)) {
+
+                                } else {
+                                    flverMaterialList.Add(null);
+                                }
+                            }
+
                             if (meshIndexCache.TryAdd(flverMesh.GetHashCode(), flverMeshList.Count)) {
                                 flverMeshList.Add(flverMesh);
                                 is32bitMeshList.Add(flverRes.Flver.Header.Version > 0x20005 && flverMesh.VertexCount > 65535);
                             }
+
 
                             splitEntities.Add(new glTFEntity {
                                 name = entity.Name,
                                 mesh = flverMesh,
                                 transform = entity.GetWorldMatrix()
                             });
-
                         }
+                    }
+                }
+            }
+        }
+
+        foreach (FLVER2.Material material in flverMaterialList) {
+            if (material != null) {
+                foreach (FLVER2.Texture texture in material.Textures) {
+                    if (textureIndexCache.TryAdd(texture.GetHashCode(), flverTextureList.Count)) {
+                        flverTextureList.Add(texture);
                     }
                 }
             }
@@ -1129,6 +1176,110 @@ public class Universe
             };
         }
 
+        char textureTypeChar(string texturePath) {
+            return texturePath[texturePath.Length - 5];
+        }
+
+        glTFMaterialField[] materialFields = new glTFMaterialField[flverMaterialList.Count];
+        for (int i = 0; i < materialFields.Length; i++) {
+            FLVER2.Material material = flverMaterialList[i];
+
+            if (material != null) {
+
+                FLVER2.Texture albedo1 = null;
+                FLVER2.Texture albedo2 = null;
+                FLVER2.Texture roughness1 = null;
+                FLVER2.Texture roughness2 = null;
+                FLVER2.Texture normal1 = null;
+                FLVER2.Texture normal2 = null;
+                FLVER2.Texture mask = null;
+
+                foreach (FLVER2.Texture texture in material.Textures) {
+                    switch (textureTypeChar(texture.Path)) {
+                        case 'a':
+                            if (albedo1 == null) {
+                                albedo1 = texture;
+                            } else {
+                                albedo2 = texture;
+                            }
+                            break;
+                        case 'r':
+                            if (roughness1 == null) {
+                                roughness1 = texture;
+                            } else {
+                                roughness2 = texture;
+                            }
+                            break;
+                        case 'n':
+                            if (normal1 == null) {
+                                normal1 = texture;
+                            } else {
+                                normal2 = texture;
+                            }
+                            break;
+                        case 'm':
+                            mask = texture;
+                            break;
+                    }
+                }
+
+                glTFMaterialTextureField? baseColorTexture = null;
+                if (albedo1 != null) {
+                    baseColorTexture = new glTFMaterialTextureField {
+                        index = textureIndexCache[albedo1.GetHashCode()]
+                    };
+                }
+
+                glTFMaterialTextureField? roughnessTexture = null;
+                if (normal2 != null) {
+                    roughnessTexture = new glTFMaterialTextureField {
+                        index = textureIndexCache[normal2.GetHashCode()]
+                    };
+                }
+
+                glTFMaterialTextureField? normalTexture = null;
+                if (normal1 != null) {
+                    normalTexture = new glTFMaterialTextureField {
+                        index = textureIndexCache[normal1.GetHashCode()]
+                    };
+                }
+
+                glTFMaterialTextureField? occlusionTexture = null;
+                if (mask != null) {
+                    occlusionTexture = new glTFMaterialTextureField {
+                        index = textureIndexCache[mask.GetHashCode()]
+                    };
+                }
+
+                glTFMaterialTextureField? emissiveTexture = null;
+                if (albedo2 != null) {
+                    emissiveTexture = new glTFMaterialTextureField {
+                        index = textureIndexCache[albedo2.GetHashCode()]
+                    };
+                }
+
+
+
+                materialFields[i] = new glTFMaterialField {
+                    name = material.Name,
+                    // TODO: make these real indices     
+                    doubleSided = true,               
+                    pbrMetallicRoughness = new glTFPBRField {
+                        baseColorTexture = baseColorTexture,
+
+                        metallicRoughnessTexture = roughnessTexture
+                    },
+                    normalTexture = normalTexture,
+                    occlusionTexture = occlusionTexture,
+                    emissiveTexture = emissiveTexture
+                };
+            } else {
+                materialFields[i] = new glTFMaterialField {
+                    name = "no_material_found"
+                };
+            }
+        }
+
 
         List<glTFAccessorField> accessorFieldsList = new List<glTFAccessorField>();
         int attributeCount = 0;
@@ -1136,6 +1287,7 @@ public class Universe
         glTFMeshField[] meshFields = new glTFMeshField[flverMeshList.Count];
 
         for (int i = 0; i < meshFields.Length; i++) {
+            // TODO: add vertex colors
             FLVER2.Mesh mesh = flverMeshList[i];
             bool is32bit = is32bitMeshList[i];
 
@@ -1146,6 +1298,7 @@ public class Universe
             };
             attributeCount += 2;
 
+            // Position attributeField //
             glTFAccessorField positionField = new glTFAccessorField {
                 bufferView = bufferViewCount,
                 componentType = glTFComponentType.FLOAT,
@@ -1154,7 +1307,9 @@ public class Universe
             };
             bufferViewCount += 1;
             accessorFieldsList.Add(positionField);
+            //////////////////////////////
 
+            // Normal attributeField //
             glTFAccessorField normalField = new glTFAccessorField {
                 bufferView = bufferViewCount,
                 componentType = glTFComponentType.FLOAT,
@@ -1163,8 +1318,21 @@ public class Universe
             };
             bufferViewCount += 1;
             accessorFieldsList.Add(normalField);
+            //////////////////////////////
 
-            // TODO: add tex coords here later
+            // TEXCOORDs attributeField //
+            attributesField.TEXCOORD_0 = attributeCount;
+            attributeCount += 1;
+
+            glTFAccessorField texcoordField = new glTFAccessorField {
+                bufferView = bufferViewCount,
+                componentType = glTFComponentType.FLOAT,
+                count = mesh.VertexCount,
+                type = glTFAccessorType.VECTOR2
+            };
+            bufferViewCount += 1;
+            accessorFieldsList.Add(texcoordField);
+            //////////////////////////////
 
             primitiveField.indices = attributeCount;
             attributeCount += 1;
@@ -1172,7 +1340,6 @@ public class Universe
             glTFAccessorField indiceField = new glTFAccessorField {
                 bufferView = bufferViewCount,
                 componentType = is32bit ? glTFComponentType.UINT : glTFComponentType.USHORT,
-                // TODO: wrap Flver2.mesh so it actually stores a list of indices
                 count = getIndicesCount(mesh),
                 type = glTFAccessorType.SCALAR
             };
@@ -1181,11 +1348,48 @@ public class Universe
 
             primitiveField.attributes = attributesField;
 
+            primitiveField.material = i;
+
             meshFields[i] = new glTFMeshField {
                 name = $"mesh_{i}",
                 primitives = new glTFPrimitiveField[] {
                     primitiveField
                 }
+            };
+        }
+
+        glTFTextureField[] textureFields = new glTFTextureField[flverTextureList.Count];
+        for (int i = 0; i < textureFields.Length; i++) {
+            textureFields[i] = new glTFTextureField {
+                sampler = 0,
+                source = i
+            };
+        }
+
+        string parsePathString(string str) {
+            int endOfPath = 0;
+            for (int i = str.Length - 1; i > 0; i--) {
+                if (str[i] == '\\') {
+                    endOfPath = i+1;
+                    break;
+                }
+            }
+            return str.Substring(endOfPath);
+        }
+
+        string setDDSExtension(string str) {
+            string extension = ".dds";
+            int end = str.Length - 1;
+            int target = end - 3;
+            return str.Substring(0, target) + extension;
+        }
+
+        glTFImageField[] imageFields = new glTFImageField[textureFields.Length];
+        for (int i = 0; i < textureFields.Length; i++) {
+            FLVER2.Texture texture = flverTextureList[i];
+            imageFields[i] = new glTFImageField {
+                mimetype = "image/dds",
+                uri = "textures/" + setDDSExtension(parsePathString(texture.Path))
             };
         }
 
@@ -1223,6 +1427,13 @@ public class Universe
             bufferViewFields[i] = bufferViewField;
         }
 
+        glTFSamplerField[] samplerFields = new glTFSamplerField[] {
+            new glTFSamplerField {
+                magFilter = glTFSamplerMagFilterType.CLOSEST,
+                minFilter = glTFSamplerMinFilterType.LINEAR_MIPMAP_LINEAR
+            }
+        };
+
         glTFBufferField[] bufferFields = new glTFBufferField[] {
             new glTFBufferField {
                 byteLength = byteCount,
@@ -1241,13 +1452,21 @@ public class Universe
 
             nodes = nodeFields,
 
+            materials = materialFields,
+
             meshes = meshFields,
+
+            textures = textureFields,
+            
+            images = imageFields,
 
             accessors = accessorFieldsList.ToArray(),
 
             bufferViews = bufferViewFields,
 
-            buffers= bufferFields
+            samplers = samplerFields,
+
+            buffers = bufferFields
         };
 
         JsonSerializerOptions options = new JsonSerializerOptions {
@@ -1256,7 +1475,7 @@ public class Universe
         };
 
         var glTFStream = File.Open(fullPath + ".gltf", FileMode.Create);
-        var glTFWriter=  new StreamWriter(glTFStream);
+        var glTFWriter = new StreamWriter(glTFStream);
         string json = JsonSerializer.Serialize(gltfData, options);
 
         glTFWriter.Write(json);
@@ -1308,9 +1527,13 @@ public class Universe
         public int? scene;
         public glTFSceneField[] scenes { get; set; }
         public glTFNodeField[] nodes { get; set; }
+        public glTFMaterialField[] materials { get; set; }
         public glTFMeshField[] meshes {get; set; }
+        public glTFTextureField[] textures { get; set; }
+        public glTFImageField[] images { get; set; }
         public glTFAccessorField[] accessors { get; set; }
         public glTFBufferViewField[] bufferViews { get; set; }
+        public glTFSamplerField[] samplers { get; set; }
         public glTFBufferField[] buffers { get; set; }
     }
 
@@ -1331,6 +1554,26 @@ public class Universe
         public float[] matrix { get; set; }
     }
 
+    public struct glTFMaterialField {
+        public string name { get; set; }
+        public bool doubleSided { get; set; }
+        public glTFPBRField? pbrMetallicRoughness { get; set; }
+        public glTFMaterialTextureField? normalTexture { get; set; }
+        public glTFMaterialTextureField? occlusionTexture { get; set; }
+        public glTFMaterialTextureField? emissiveTexture { get; set; }
+
+    }
+    
+    public struct glTFPBRField {
+        public glTFMaterialTextureField? baseColorTexture { get; set; }
+        public glTFMaterialTextureField? metallicRoughnessTexture { get; set; }
+    }
+    
+
+    public struct glTFMaterialTextureField {
+        public int index { get; set; }
+    }
+
     public struct glTFMeshField {
     public string name { get; set; }
     public glTFPrimitiveField[] primitives { get; set; }
@@ -1339,18 +1582,49 @@ public class Universe
     public struct glTFPrimitiveField {
         public glTFAttributesField attributes { get; set; }
         public int indices { get; set; }
+        public int? material { get; set; }
     }
 
     public struct glTFAttributesField {
         public int? POSITION { get; set; }
         public int? NORMAL { get; set; }
-        public int? TEXCOORD_O { get; set; }
+        public int? TEXCOORD_0 { get; set; }
     }
 
     public static class glTFComponentType {
         public const int FLOAT = 5126;
         public const int USHORT = 5123;
         public const int UINT = 5125;
+    }
+
+    public struct glTFTextureField {
+        public int sampler { get; set; }
+        public int source { get; set; }
+    }
+
+    public struct glTFImageField {
+        public string mimetype { get; set; }
+        public string name { get; set; }
+        public string uri { get; set; }
+    }
+
+    public struct glTFSamplerField {
+        public int magFilter { get; set; }
+        public int minFilter { get; set; }
+    }
+
+    public static class glTFSamplerMagFilterType {
+        public const int NEAREST = 9728;
+        public const int CLOSEST = 9729;
+    }
+
+    public static class glTFSamplerMinFilterType {
+        public const int NEAREST = 9728;
+        public const int CLOSEST = 9729;
+        public const int NEAREST_MIPMAP_NEAREST = 9984;
+        public const int LINEAR_MIPMAP_NEAREST = 9985;
+        public const int NEAREST_MIPMAP_LINEAR = 9986;
+        public const int LINEAR_MIPMAP_LINEAR = 9987;
     }
 
     public static class glTFAccessorType {
@@ -1386,13 +1660,15 @@ public class Universe
     private static byte[] MeshToByteArray(FLVER2.Mesh mesh) {
         int positionCount = mesh.VertexCount;
         int normalCount = mesh.VertexCount;
+        int texcoordCount = mesh.VertexCount;
         int indiceCount = getIndicesCount(mesh);
 
         int postionByteCount = positionCount * sizeof(float) * 3;
         int normalByteCount = normalCount * sizeof(float) * 3;
+        int texcoordByteCount = normalCount * sizeof(float) * 2;
         int indiceByteCount = indiceCount * sizeof(ushort);
 
-        int byteCount = postionByteCount + normalByteCount + indiceByteCount;
+        int byteCount = postionByteCount + normalByteCount + texcoordByteCount + indiceByteCount;
         byte[] byteArray = new byte[byteCount];
 
         float[] primtivePositionsArray = new float[positionCount * 3];
@@ -1413,9 +1689,18 @@ public class Universe
             primtiveNormalsArray[i+2] = -normal.Z;
         }
 
+        float[] primtiveTexcoordsArray = new float[texcoordCount * 2];
+        for (int i = 0; i < (texcoordCount * 2); i += 2) {
+            FLVER.Vertex vertex = mesh.Vertices[i/2];
+            Vector3 uv = vertex.GetUV(0);
+            primtiveTexcoordsArray[i] = uv.X;
+            primtiveTexcoordsArray[i+1] = uv.Y;
+        }
+
         Buffer.BlockCopy(primtivePositionsArray, 0, byteArray, 0, postionByteCount);
         Buffer.BlockCopy(primtiveNormalsArray, 0, byteArray, postionByteCount, normalByteCount);
-        Buffer.BlockCopy(getIndices(mesh), 0, byteArray, postionByteCount + normalByteCount, indiceByteCount);
+        Buffer.BlockCopy(primtiveTexcoordsArray, 0, byteArray, postionByteCount + normalByteCount, texcoordByteCount);
+        Buffer.BlockCopy(getIndices(mesh), 0, byteArray, postionByteCount + normalByteCount + texcoordByteCount, indiceByteCount);
 
         return byteArray;
     }
@@ -1423,13 +1708,15 @@ public class Universe
     private static byte[] MeshToByteArray32bit(FLVER2.Mesh mesh) {
         int positionCount = mesh.VertexCount;
         int normalCount = mesh.VertexCount;
+        int texcoordCount = mesh.VertexCount;
         int indiceCount = getIndicesCount(mesh);
 
         int postionByteCount = positionCount * sizeof(float) * 3;
         int normalByteCount = normalCount * sizeof(float) * 3;
+        int texcoordByteCount = normalCount * sizeof(float) * 2;
         int indiceByteCount = indiceCount * sizeof(int);
 
-        int byteCount = postionByteCount + normalByteCount + indiceByteCount;
+        int byteCount = postionByteCount + normalByteCount + texcoordByteCount + indiceByteCount;
         byte[] byteArray = new byte[byteCount];
 
         float[] primtivePositionsArray = new float[positionCount * 3];
@@ -1450,9 +1737,18 @@ public class Universe
             primtiveNormalsArray[i+2] = -normal.Z;
         }
 
+        float[] primtiveTexcoordsArray = new float[texcoordCount * 2];
+        for (int i = 0; i < (texcoordCount * 2); i += 2) {
+            FLVER.Vertex vertex = mesh.Vertices[i/2];
+            Vector3 uv = vertex.GetUV(0);
+            primtiveTexcoordsArray[i] = uv.X;
+            primtiveTexcoordsArray[i+1] = uv.Y;
+        }
+
         Buffer.BlockCopy(primtivePositionsArray, 0, byteArray, 0, postionByteCount);
         Buffer.BlockCopy(primtiveNormalsArray, 0, byteArray, postionByteCount, normalByteCount);
-        Buffer.BlockCopy(getIndices32bit(mesh), 0, byteArray, postionByteCount + normalByteCount, indiceByteCount);
+        Buffer.BlockCopy(primtiveTexcoordsArray, 0, byteArray, postionByteCount + normalByteCount, texcoordByteCount);
+        Buffer.BlockCopy(getIndices32bit(mesh), 0, byteArray, postionByteCount + normalByteCount + texcoordByteCount, indiceByteCount);
 
         return byteArray;
     }
