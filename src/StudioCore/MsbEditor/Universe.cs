@@ -1090,19 +1090,12 @@ public class Universe
         
         // Find all meshes and assign indexes
         foreach (Entity entity in map.Objects) {
+            Console.WriteLine(entity.Name);
             if (entity.RenderSceneMesh is MeshRenderableProxy meshProxy) {
                 if (meshProxy._meshProvider is FlverMeshProvider flverProvider) {
                     if (flverProvider._resource != null) {
                         FlverResource flverRes = flverProvider._resource.Get();
-
-                        // foreach (var material in flverRes.Flver.Materials) {
-                        //     Console.WriteLine(material.Name);
-                        //     Console.WriteLine($"material has {material.Textures.Count} textures");
-                        //     foreach (var texture in material.Textures) {
-                        //         Console.WriteLine(texture.Path);
-                        //     }
-                        //     Console.WriteLine();
-                        // }
+                        
 
                         for (int i = 0; i < flverRes.Flver.Meshes.Count; i++) {
                             FLVER2.Mesh flverMesh = flverRes.Flver.Meshes[i];
@@ -1127,17 +1120,83 @@ public class Universe
                                 is32bitMeshList.Add(flverRes.Flver.Header.Version > 0x20005 && flverMesh.VertexCount > 65535);
                             }
 
+                            Matrix4x4 meshTransform;
 
+                            Matrix4x4 entityTransform = entity.GetWorldMatrix();
+                            if (flverMesh.DefaultBoneIndex < flverRes.Flver.Bones.Count) {
+                                var bone = flverRes.Flver.Bones[flverMesh.DefaultBoneIndex];
+                                Transform boneTransform = Transform.Default;
+                                boneTransform.Position = new Vector3 (bone.Position.X, bone.Position.Y, bone.Position.Z);
+                                boneTransform.EulerRotationXZY = bone.Rotation;
+                                // boneTransform.Scale = bone.Scale;
+
+
+                                meshTransform =    boneTransform.WorldMatrix * entityTransform;
+                            } else {
+                                meshTransform = entityTransform;
+                            }
+
+                            // meshTransform = entityTransform;
+
+
+
+                            // o008821
+                            // Console.WriteLine(entity.Name);
+                            // Console.WriteLine(flverMesh.DefaultBoneIndex);
+                            // if (flverMesh.DefaultBoneIndex < flverRes.Flver.Bones.Count) {
+                            //     var boneLog = flverRes.Flver.Bones[flverMesh.DefaultBoneIndex];
+                            //     Console.WriteLine(boneLog.Name);
+                            //     Console.WriteLine(boneLog.Position);
+                            //     Console.WriteLine(boneLog.Rotation);
+                            //     Console.WriteLine(boneLog.Scale);
+                            //     Console.WriteLine("parent:" + boneLog.ParentIndex);
+                            //     Console.WriteLine("child:" + boneLog.ChildIndex);
+                            // }
+                            // Console.WriteLine();
+                            // foreach (var buffer in flverMesh.VertexBuffers) {
+                            //     FLVER2.BufferLayout layouts = flverRes.Flver.BufferLayouts[buffer.LayoutIndex];
+                            //     foreach (FLVER.LayoutMember layoutMember in layouts) {
+                            //         Console.WriteLine(layoutMember.Type);
+                            //         Console.WriteLine(layoutMember.Semantic == FLVER.LayoutSemantic.Normal && (layoutMember.Type == FLVER.LayoutType.Byte4B || layoutMember.Type == FLVER.LayoutType.Byte4E));
+                            //         if (layoutMember.Semantic == FLVER.LayoutSemantic.Normal && (layoutMember.Type == FLVER.LayoutType.Byte4B || layoutMember.Type == FLVER.LayoutType.Byte4E)) {
+                            //             Console.WriteLine(flverMesh.Vertices[0].NormalW);
+                            //         }
+                            //     }
+                            // }
+
+                            // int greatestColorCount = 0;
+                            // foreach (var vertex in flverMesh.Vertices) {
+                            //     if (vertex.Colors != null)
+                            //         if (vertex.Colors.Count > greatestColorCount)
+                            //             greatestColorCount = vertex.Colors.Count;
+                            // }
+                            // Console.WriteLine(greatestColorCount);
+                            // // flverMesh.Vertices[0].Colors.Count;
+                            // Console.WriteLine();
+                            // Console.WriteLine();
+
+
+                            // entity.Children
                             splitEntities.Add(new glTFEntity {
                                 name = entity.Name,
                                 mesh = flverMesh,
-                                transform = entity.GetWorldMatrix()
+                                transform = meshTransform
+                                
                             });
                         }
                     }
                 }
             }
         }
+
+        // foreach (FLVER2.Material mat in flverMaterialList) {
+        //     if (mat != null) {
+        //         Console.WriteLine(mat.Name);
+        //     }
+        // }
+
+        // Console.WriteLine("flverMaterialCount: " + flverMaterialList.Count);
+        // Console.WriteLine("flverMeshCount: " + flverMeshList.Count);
 
         foreach (FLVER2.Material material in flverMaterialList) {
             if (material != null) {
@@ -1333,6 +1392,20 @@ public class Universe
             bufferViewCount += 1;
             accessorFieldsList.Add(texcoordField);
             //////////////////////////////
+            
+            // COLORs attributeField //
+            attributesField.COLOR_0 = attributeCount;
+            attributeCount += 1;
+
+            glTFAccessorField colorField = new glTFAccessorField {
+                bufferView = bufferViewCount,
+                componentType = glTFComponentType.FLOAT,
+                count = mesh.VertexCount,
+                type = glTFAccessorType.VECTOR4
+            };
+            bufferViewCount += 1;
+            accessorFieldsList.Add(colorField);
+            ///////////////////////////////
 
             primitiveField.indices = attributeCount;
             attributeCount += 1;
@@ -1409,6 +1482,9 @@ public class Universe
                     break;
                 case glTFAccessorType.VECTOR2:
                     byteLength = accessorField.count * sizeof(float) * 2;
+                    break;
+                case glTFAccessorType.VECTOR4:
+                    byteLength = accessorField.count * sizeof(float) * 4;
                     break;
                 case glTFAccessorType.SCALAR:
                     if (accessorField.componentType == glTFComponentType.USHORT) {
@@ -1589,6 +1665,7 @@ public class Universe
         public int? POSITION { get; set; }
         public int? NORMAL { get; set; }
         public int? TEXCOORD_0 { get; set; }
+        public int? COLOR_0 { get; set; }
     }
 
     public static class glTFComponentType {
@@ -1630,6 +1707,7 @@ public class Universe
     public static class glTFAccessorType {
         public const string VECTOR2 = "VEC2";
         public const string VECTOR3 = "VEC3";
+        public const string VECTOR4 = "VEC4";
         public const string SCALAR = "SCALAR";
     }
 
@@ -1661,14 +1739,16 @@ public class Universe
         int positionCount = mesh.VertexCount;
         int normalCount = mesh.VertexCount;
         int texcoordCount = mesh.VertexCount;
+        int colorCount = mesh.VertexCount;
         int indiceCount = getIndicesCount(mesh);
 
         int postionByteCount = positionCount * sizeof(float) * 3;
         int normalByteCount = normalCount * sizeof(float) * 3;
-        int texcoordByteCount = normalCount * sizeof(float) * 2;
+        int texcoordByteCount = texcoordCount * sizeof(float) * 2;
+        int colorByteCount = colorCount * sizeof(float) * 4;
         int indiceByteCount = indiceCount * sizeof(ushort);
 
-        int byteCount = postionByteCount + normalByteCount + texcoordByteCount + indiceByteCount;
+        int byteCount = postionByteCount + normalByteCount + texcoordByteCount + colorByteCount + indiceByteCount;
         byte[] byteArray = new byte[byteCount];
 
         float[] primtivePositionsArray = new float[positionCount * 3];
@@ -1684,9 +1764,9 @@ public class Universe
         for (int i = 0; i < (normalCount * 3); i += 3) {
             FLVER.Vertex vertex = mesh.Vertices[i/3];
             Vector3 normal = vertex.Normal;
-            primtiveNormalsArray[i] = -normal.X;
-            primtiveNormalsArray[i+1] = -normal.Y;
-            primtiveNormalsArray[i+2] = -normal.Z;
+            primtiveNormalsArray[i] = normal.X;
+            primtiveNormalsArray[i+1] = normal.Y;
+            primtiveNormalsArray[i+2] = normal.Z;
         }
 
         float[] primtiveTexcoordsArray = new float[texcoordCount * 2];
@@ -1697,10 +1777,28 @@ public class Universe
             primtiveTexcoordsArray[i+1] = uv.Y;
         }
 
+        float[] primtiveColorsArray = new float[colorCount * 4];
+        for (int i = 0; i < (colorCount * 4); i += 4) {
+            FLVER.Vertex vertex = mesh.Vertices[i/4];
+            if (vertex.Colors != null && vertex.Colors.Count > 0) {
+                FLVER.VertexColor color = vertex.Colors[0];
+                primtiveColorsArray[i] = color.R;
+                primtiveColorsArray[i+1] = color.G;
+                primtiveColorsArray[i+2] = color.B;
+                primtiveColorsArray[i+3] = color.A;
+            } else {
+                primtiveColorsArray[i] = 0.0f;
+                primtiveColorsArray[i+1] = 0.0f;
+                primtiveColorsArray[i+2] = 0.0f;
+                primtiveColorsArray[i+3] = 0.0f;
+            }
+        }
+
         Buffer.BlockCopy(primtivePositionsArray, 0, byteArray, 0, postionByteCount);
         Buffer.BlockCopy(primtiveNormalsArray, 0, byteArray, postionByteCount, normalByteCount);
         Buffer.BlockCopy(primtiveTexcoordsArray, 0, byteArray, postionByteCount + normalByteCount, texcoordByteCount);
-        Buffer.BlockCopy(getIndices(mesh), 0, byteArray, postionByteCount + normalByteCount + texcoordByteCount, indiceByteCount);
+        Buffer.BlockCopy(primtiveColorsArray, 0, byteArray, postionByteCount + normalByteCount + texcoordByteCount, colorByteCount);
+        Buffer.BlockCopy(getIndices(mesh), 0, byteArray, postionByteCount + normalByteCount + texcoordByteCount + colorByteCount, indiceByteCount);
 
         return byteArray;
     }
@@ -1709,14 +1807,16 @@ public class Universe
         int positionCount = mesh.VertexCount;
         int normalCount = mesh.VertexCount;
         int texcoordCount = mesh.VertexCount;
+        int colorCount = mesh.VertexCount;
         int indiceCount = getIndicesCount(mesh);
 
         int postionByteCount = positionCount * sizeof(float) * 3;
         int normalByteCount = normalCount * sizeof(float) * 3;
-        int texcoordByteCount = normalCount * sizeof(float) * 2;
+        int texcoordByteCount = texcoordCount * sizeof(float) * 2;
+        int colorByteCount = colorCount * sizeof(float) * 4;
         int indiceByteCount = indiceCount * sizeof(int);
 
-        int byteCount = postionByteCount + normalByteCount + texcoordByteCount + indiceByteCount;
+        int byteCount = postionByteCount + normalByteCount + texcoordByteCount + colorByteCount + indiceByteCount;
         byte[] byteArray = new byte[byteCount];
 
         float[] primtivePositionsArray = new float[positionCount * 3];
@@ -1732,9 +1832,9 @@ public class Universe
         for (int i = 0; i < (normalCount * 3); i += 3) {
             FLVER.Vertex vertex = mesh.Vertices[i/3];
             Vector3 normal = vertex.Normal;
-            primtiveNormalsArray[i] = -normal.X;
-            primtiveNormalsArray[i+1] = -normal.Y;
-            primtiveNormalsArray[i+2] = -normal.Z;
+            primtiveNormalsArray[i] = normal.X;
+            primtiveNormalsArray[i+1] = normal.Y;
+            primtiveNormalsArray[i+2] = normal.Z;
         }
 
         float[] primtiveTexcoordsArray = new float[texcoordCount * 2];
@@ -1745,10 +1845,29 @@ public class Universe
             primtiveTexcoordsArray[i+1] = uv.Y;
         }
 
+        float[] primtiveColorsArray = new float[colorCount * 4];
+        for (int i = 0; i < (colorCount * 4); i += 4) {
+            FLVER.Vertex vertex = mesh.Vertices[i/4];
+            if (vertex.Colors != null && vertex.Colors.Count > 0) {
+                FLVER.VertexColor color = vertex.Colors[0];
+                primtiveColorsArray[i] = color.R;
+                primtiveColorsArray[i+1] = color.G;
+                primtiveColorsArray[i+2] = color.B;
+                primtiveColorsArray[i+3] = color.A;
+                Console.WriteLine($"{color.R}, {color.G}, {color.B}, {color.A}");
+            } else {
+                primtiveColorsArray[i] = 0.0f;
+                primtiveColorsArray[i+1] = 0.0f;
+                primtiveColorsArray[i+2] = 0.0f;
+                primtiveColorsArray[i+3] = 0.0f;
+            }
+        }
+
         Buffer.BlockCopy(primtivePositionsArray, 0, byteArray, 0, postionByteCount);
         Buffer.BlockCopy(primtiveNormalsArray, 0, byteArray, postionByteCount, normalByteCount);
         Buffer.BlockCopy(primtiveTexcoordsArray, 0, byteArray, postionByteCount + normalByteCount, texcoordByteCount);
-        Buffer.BlockCopy(getIndices32bit(mesh), 0, byteArray, postionByteCount + normalByteCount + texcoordByteCount, indiceByteCount);
+        Buffer.BlockCopy(primtiveColorsArray, 0, byteArray, postionByteCount + normalByteCount + texcoordByteCount, colorByteCount);
+        Buffer.BlockCopy(getIndices32bit(mesh), 0, byteArray, postionByteCount + normalByteCount + texcoordByteCount + colorByteCount, indiceByteCount);
 
         return byteArray;
     }
@@ -1758,6 +1877,9 @@ public class Universe
         var indicesTotal = 0;
 
         foreach (FLVER2.FaceSet? faceset in facesets) {
+            if (faceset.Flags.HasFlag(FLVER2.FaceSet.FSFlags.MotionBlur) || faceset.Flags.HasFlag(FLVER2.FaceSet.FSFlags.LodLevel1) || faceset.Flags.HasFlag(FLVER2.FaceSet.FSFlags.LodLevel2)) {
+                continue;
+            }
             indicesTotal += faceset.Indices.Length;
         }
 
@@ -1772,6 +1894,9 @@ public class Universe
         Span<int> fs32 = null;
 
         foreach (FLVER2.FaceSet? faceset in facesets) {
+            if (faceset.Flags.HasFlag(FLVER2.FaceSet.FSFlags.MotionBlur) || faceset.Flags.HasFlag(FLVER2.FaceSet.FSFlags.LodLevel1) || faceset.Flags.HasFlag(FLVER2.FaceSet.FSFlags.LodLevel2)) {
+                continue;
+            }
             indicesTotal += faceset.Indices.Length;
         }
 
@@ -1785,6 +1910,19 @@ public class Universe
         foreach (FLVER2.FaceSet? faceset in facesets) {
             if (faceset.Indices.Length == 0) {
                 continue;
+            }
+
+            if (faceset.Flags.HasFlag(FLVER2.FaceSet.FSFlags.MotionBlur) || faceset.Flags.HasFlag(FLVER2.FaceSet.FSFlags.LodLevel1) || faceset.Flags.HasFlag(FLVER2.FaceSet.FSFlags.LodLevel2)) {
+                continue;
+            }
+
+            if (faceset.Flags.HasFlag(FLVER2.FaceSet.FSFlags.EdgeCompressed)) {
+                Console.WriteLine("EdgeCompressed!");
+            }
+
+            int[] flippedfacesetIndices = new int[faceset.IndicesCount];
+            for (int i = 0; i < faceset.IndicesCount; i++) {
+                flippedfacesetIndices[i] = faceset.Indices[(faceset.IndicesCount-1)-i];
             }
 
             FlverResource.FlverSubmesh.FlverSubmeshFaceSet newFaceSet = new() {
@@ -1835,7 +1973,7 @@ public class Universe
                     }
                     else
                     {
-                        fs16[newFaceSet.IndexOffset + k] = (ushort)faceset.Indices[k];
+                        fs16[newFaceSet.IndexOffset + k] = (ushort)flippedfacesetIndices[k];
                     }
                 }
             }
@@ -1855,6 +1993,9 @@ public class Universe
         Span<int> fs32 = null;
 
         foreach (FLVER2.FaceSet? faceset in facesets) {
+            if (faceset.Flags.HasFlag(FLVER2.FaceSet.FSFlags.MotionBlur) || faceset.Flags.HasFlag(FLVER2.FaceSet.FSFlags.LodLevel1) || faceset.Flags.HasFlag(FLVER2.FaceSet.FSFlags.LodLevel2)) {
+                continue;
+            }
             indicesTotal += faceset.Indices.Length;
         }
 
@@ -1868,6 +2009,15 @@ public class Universe
         foreach (FLVER2.FaceSet? faceset in facesets) {
             if (faceset.Indices.Length == 0) {
                 continue;
+            }
+
+            if (faceset.Flags.HasFlag(FLVER2.FaceSet.FSFlags.MotionBlur) || faceset.Flags.HasFlag(FLVER2.FaceSet.FSFlags.LodLevel1) || faceset.Flags.HasFlag(FLVER2.FaceSet.FSFlags.LodLevel2)) {
+                continue;
+            }
+
+            int[] flippedfacesetIndices = new int[faceset.IndicesCount];
+            for (int i = 0; i < faceset.IndicesCount; i++) {
+                flippedfacesetIndices[i] = faceset.Indices[(faceset.IndicesCount-1)-i];
             }
 
             FlverResource.FlverSubmesh.FlverSubmeshFaceSet newFaceSet = new() {
@@ -1904,7 +2054,7 @@ public class Universe
                     }
                     else
                     {
-                        fs32[newFaceSet.IndexOffset + k] = faceset.Indices[k];
+                        fs32[newFaceSet.IndexOffset + k] = flippedfacesetIndices[k];
                     }
                 }
             }
